@@ -1,0 +1,6 @@
+{
+  "name": "Kivy Python 3",
+  "description": "Python 3 & Kivy interactive development environment, live UI runner and rapid prototyping studio for Android.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
