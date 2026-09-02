@@ -42,7 +42,10 @@ class PythonClass(
         val instance = PythonInstance(this, interpreter)
         // If parent is a Kivy widget, create backing node
         if (isKivyWidget()) {
-            val node = KivyWidgetNode(type = name)
+            val node = KivyWidgetNode(
+                type = name,
+                baseType = parentClassName ?: "BoxLayout"
+            )
             instance.backingWidget = node
             instance.fields["ids"] = node.ids
         }
@@ -52,13 +55,17 @@ class PythonClass(
     }
 
     fun isKivyWidget(): Boolean {
-        if (parentClassName in listOf("Widget", "BoxLayout", "GridLayout", "FloatLayout", "Screen", "ScreenManager", "Label", "Button")) {
+        if (parentClassName in listOf("Widget", "BoxLayout", "GridLayout", "FloatLayout", "AnchorLayout", "Screen", "ScreenManager", "Label", "Button", "Slider", "Switch", "ProgressBar")) {
             return true
         }
-        if (name in listOf("BoxLayout", "GridLayout", "FloatLayout", "Screen", "ScreenManager", "Label", "Button", "Slider", "Switch", "ProgressBar", "Widget")) {
+        if (name in listOf("BoxLayout", "GridLayout", "FloatLayout", "AnchorLayout", "Screen", "ScreenManager", "Label", "Button", "Slider", "Switch", "ProgressBar", "Widget")) {
             return true
         }
         return false
+    }
+
+    fun isApp(): Boolean {
+        return parentClassName == "App" || name.endsWith("App")
     }
 }
 
@@ -73,8 +80,9 @@ class PythonInstance(
         if (fields.containsKey(attr)) return fields[attr]
         if (attr == "ids" && backingWidget != null) return backingWidget!!.ids
         if (attr == "title" && fields.containsKey("title")) return fields["title"]
-        if (attr == "manager") return fields["manager"]
+        if (attr == "manager") return fields["manager"] ?: backingWidget?.parent
         if (attr == "current" && fields.containsKey("current")) return fields["current"]
+        if (attr == "canvas" && backingWidget != null) return backingWidget!!.canvas
 
         if (backingWidget != null) {
             when (attr) {
@@ -85,6 +93,12 @@ class PythonInstance(
                 "ball_x" -> return fields["ball_x"] ?: 0f
                 "ball_y" -> return fields["ball_y"] ?: 0f
                 "canvas" -> return backingWidget!!.canvas
+            }
+            if (backingWidget!!.properties.containsKey(attr)) {
+                return backingWidget!!.properties[attr]
+            }
+            if (backingWidget!!.ids.containsKey(attr)) {
+                return backingWidget!!.ids[attr]
             }
         }
 
@@ -123,6 +137,12 @@ class PythonInstance(
                     if (value is KivyColor) backingWidget!!.properties["background_color"] = value
                     else if (value is List<*>) backingWidget!!.properties["background_color"] = KivyColor.fromList(value)
                 }
+                "current" -> {
+                    backingWidget!!.properties["current"] = value?.toString() ?: ""
+                }
+                else -> {
+                    backingWidget!!.properties[attr] = value
+                }
             }
         }
     }
@@ -138,10 +158,15 @@ class PythonMethod(
         val localEnv = PythonEnvironment(declaringInterpreter.globalEnv)
         localEnv.set("self", instance)
 
+        val startIndex = if (paramNames.firstOrNull() == "self") 1 else 0
         var argIdx = 0
-        for (i in 1 until paramNames.size) {
+        for (i in startIndex until paramNames.size) {
             val param = paramNames[i]
-            if (kwargs.containsKey(param)) {
+            if (param.startsWith("**")) {
+                localEnv.set(param.removePrefix("**"), kwargs)
+            } else if (param.startsWith("*")) {
+                localEnv.set(param.removePrefix("*"), args.drop(argIdx))
+            } else if (kwargs.containsKey(param)) {
                 localEnv.set(param, kwargs[param])
             } else if (argIdx < args.size) {
                 localEnv.set(param, args[argIdx++])
@@ -169,6 +194,8 @@ class PythonInterpreter {
     }
 
     private fun setupBuiltins() {
+        globalEnv.set("__name__", "__main__")
+
         // Built-in functions
         globalEnv.set("print", { args: List<Any?> ->
             val output = args.joinToString(" ") { it?.toString() ?: "None" }
@@ -186,7 +213,13 @@ class PythonInterpreter {
             }
         })
 
-        globalEnv.set("str", { args: List<Any?> -> args.getOrNull(0)?.toString() ?: "" })
+        globalEnv.set("str", { args: List<Any?> ->
+            val v = args.getOrNull(0)
+            if (v is Double && v % 1.0 == 0.0) v.toLong().toString()
+            else if (v is Float && v % 1.0f == 0.0f) v.toLong().toString()
+            else v?.toString() ?: ""
+        })
+
         globalEnv.set("int", { args: List<Any?> ->
             when (val v = args.getOrNull(0)) {
                 is Number -> v.toInt()
@@ -195,6 +228,7 @@ class PythonInterpreter {
                 else -> 0
             }
         })
+
         globalEnv.set("float", { args: List<Any?> ->
             when (val v = args.getOrNull(0)) {
                 is Number -> v.toFloat()
@@ -202,16 +236,32 @@ class PythonInterpreter {
                 else -> 0f
             }
         })
+
         globalEnv.set("abs", { args: List<Any?> ->
             when (val v = args.getOrNull(0)) {
                 is Number -> abs(v.toDouble())
                 else -> 0.0
             }
         })
+
         globalEnv.set("round", { args: List<Any?> ->
             when (val v = args.getOrNull(0)) {
                 is Number -> v.toDouble().roundToInt()
                 else -> 0
+            }
+        })
+
+        globalEnv.set("isinstance", { args: List<Any?> ->
+            val obj = args.getOrNull(0)
+            val typeArg = args.getOrNull(1)
+            when (typeArg) {
+                "float", globalEnv.get("float") -> obj is Float || obj is Double
+                "int", globalEnv.get("int") -> obj is Int || obj is Long
+                "str", globalEnv.get("str") -> obj is String
+                "bool" -> obj is Boolean
+                "list" -> obj is List<*>
+                "dict" -> obj is Map<*, *>
+                else -> true
             }
         })
 
@@ -296,6 +346,7 @@ class PythonInterpreter {
         scheduledTasks.clear()
         runningAppInstance = null
         rootWidget = null
+        classes.clear()
 
         val startTime = System.currentTimeMillis()
 
@@ -310,6 +361,25 @@ class PythonInterpreter {
 
         try {
             parseAndExecutePython(pythonCode)
+
+            // If root widget was not set by .run(), but an App class was defined, auto-run it
+            if (rootWidget == null) {
+                val appClass = classes.values.firstOrNull { it.isApp() } ?: classes.values.firstOrNull()
+                if (appClass != null) {
+                    val appInst = appClass.instantiate(this)
+                    runningAppInstance = appInst
+                    val buildMethod = appClass.methods["build"]
+                    if (buildMethod != null) {
+                        val returned = buildMethod.invoke(appInst, emptyList())
+                        if (returned is KivyWidgetNode) {
+                            rootWidget = returned
+                        } else if (returned is PythonInstance && returned.backingWidget != null) {
+                            rootWidget = returned.backingWidget
+                        }
+                    }
+                }
+            }
+
             val duration = System.currentTimeMillis() - startTime
             val appTitle = (runningAppInstance?.fields?.get("title") as? String) ?: "Kivy Python 3 App"
 
@@ -383,7 +453,6 @@ class PythonInterpreter {
                     }
                 }
 
-                // Parse methods within class
                 val pClass = PythonClass(className, parentName, classEnv = PythonEnvironment(globalEnv))
                 parseClassMethods(pClass, classLines)
                 classes[className] = pClass
@@ -391,7 +460,38 @@ class PythonInterpreter {
                 continue
             }
 
-            // Top-level instantiation / run: e.g. DashboardApp().run() or if __name__ == '__main__': ...
+            // Top-level if statement: e.g. if __name__ == '__main__':
+            if (trimmed.startsWith("if ")) {
+                val condExpr = trimmed.removePrefix("if ").removeSuffix(":").trim()
+                val isTrue = evaluateCondition(condExpr, globalEnv, null)
+
+                val ifLines = mutableListOf<String>()
+                val ifIndent = line.takeWhile { it == ' ' || it == '\t' }.length
+                i++
+
+                while (i < lines.size) {
+                    val bodyLine = lines[i]
+                    if (bodyLine.trim().isEmpty()) {
+                        ifLines.add(bodyLine)
+                        i++
+                        continue
+                    }
+                    val bodyIndent = bodyLine.takeWhile { it == ' ' || it == '\t' }.length
+                    if (bodyIndent > ifIndent) {
+                        ifLines.add(bodyLine)
+                        i++
+                    } else {
+                        break
+                    }
+                }
+
+                if (isTrue) {
+                    executeBlock(ifLines, globalEnv, null)
+                }
+                continue
+            }
+
+            // Direct App run
             if (trimmed.contains(".run()") || trimmed.contains("().run()")) {
                 val appClassName = trimmed.substringBefore("().run()").substringBefore(".run()").trim().substringAfterLast(" ")
                 val appClass = classes[appClassName]
@@ -426,7 +526,7 @@ class PythonInterpreter {
             if (trimmed.startsWith("def ")) {
                 val defStr = trimmed.removePrefix("def ").trim()
                 val methodName = defStr.substringBefore("(").trim()
-                val paramsStr = defStr.substringAfter("(").substringBefore(")")
+                val paramsStr = defStr.substringAfter("(").substringBeforeLast(")")
                 val params = paramsStr.split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
                 val methodLines = mutableListOf<String>()
@@ -472,7 +572,7 @@ class PythonInterpreter {
                 return if (expr.isNotEmpty()) evaluateExpression(expr, env, self) else null
             }
 
-            // If statement
+            // If statement inside block
             if (trimmed.startsWith("if ")) {
                 val condExpr = trimmed.removePrefix("if ").removeSuffix(":").trim()
                 val condVal = evaluateCondition(condExpr, env, self)
@@ -504,6 +604,27 @@ class PythonInterpreter {
                 continue
             }
 
+            // Top-level App run inside block
+            if (trimmed.contains(".run()") || trimmed.contains("().run()")) {
+                val appClassName = trimmed.substringBefore("().run()").substringBefore(".run()").trim().substringAfterLast(" ")
+                val appClass = classes[appClassName]
+                if (appClass != null) {
+                    val appInst = appClass.instantiate(this)
+                    runningAppInstance = appInst
+                    val buildMethod = appClass.methods["build"]
+                    if (buildMethod != null) {
+                        val returned = buildMethod.invoke(appInst, emptyList())
+                        if (returned is KivyWidgetNode) {
+                            rootWidget = returned
+                        } else if (returned is PythonInstance && returned.backingWidget != null) {
+                            rootWidget = returned.backingWidget
+                        }
+                    }
+                }
+                i++
+                continue
+            }
+
             executeSingleStatement(trimmed, env, self)
             i++
         }
@@ -511,8 +632,11 @@ class PythonInterpreter {
     }
 
     private fun executeSingleStatement(stmt: String, env: PythonEnvironment, self: PythonInstance?) {
-        // Special case: widget canvas block 'with self.canvas:'
         if (stmt.startsWith("with self.canvas:") || stmt.startsWith("with self.canvas")) {
+            return
+        }
+
+        if (stmt.startsWith("super().") || stmt.startsWith("super(")) {
             return
         }
 
@@ -522,10 +646,11 @@ class PythonInterpreter {
             val evaluated = evaluateExpression(inner, env, self)
             val logStr = evaluated?.toString() ?: "None"
             stdoutLogs.add(logStr)
+            println("[Python STDOUT] $logStr")
             return
         }
 
-        // Assignment: a = b or self.a = b or a += b
+        // Assignment: a = b, a += b, a -= b
         if (stmt.contains("=") && !stmt.startsWith("==") && !stmt.contains("==") && !stmt.contains("<=") && !stmt.contains(">=")) {
             if (stmt.contains("+=")) {
                 val parts = stmt.split("+=")
@@ -558,30 +683,97 @@ class PythonInterpreter {
             return
         }
 
-        // Method / Function invocation: e.g. root.add_widget(header) or btn.bind(...) or self.game.jump()
         evaluateExpression(stmt, env, self)
     }
 
     private fun assignValue(target: String, value: Any?, env: PythonEnvironment, self: PythonInstance?) {
-        if (target.startsWith("self.")) {
-            val attr = target.removePrefix("self.").trim()
-            self?.setAttribute(attr, value)
-        } else if (target.contains(".")) {
-            val parts = target.split(".", limit = 2)
-            val obj = evaluateExpression(parts[0].trim(), env, self)
-            val propName = parts[1].trim()
-            if (obj is PythonInstance) {
-                obj.setAttribute(propName, value)
-            } else if (obj is KivyWidgetNode) {
-                when (propName) {
-                    "text" -> obj.properties["text"] = value?.toString() ?: ""
-                    "value" -> obj.properties["value"] = (value as? Number)?.toFloat() ?: 0f
-                    "active" -> obj.properties["active"] = (value == true || value?.toString()?.lowercase() == "true")
-                    else -> obj.properties[propName] = value
+        val cleanTarget = target.trim()
+
+        if (cleanTarget.startsWith("self.")) {
+            val path = cleanTarget.removePrefix("self.").trim()
+            if (path.contains(".")) {
+                setNestedProperty(self, path, value, env)
+            } else {
+                self?.setAttribute(path, value)
+            }
+        } else if (cleanTarget.contains(".")) {
+            val parts = cleanTarget.split(".")
+            val rootObj = evaluateExpression(parts[0].trim(), env, self)
+            val subPath = parts.drop(1).joinToString(".")
+            setNestedProperty(rootObj, subPath, value, env)
+        } else {
+            env.set(cleanTarget, value)
+        }
+    }
+
+    private fun setNestedProperty(rootObj: Any?, path: String, value: Any?, env: PythonEnvironment) {
+        val parts = path.split(".")
+        var curr: Any? = rootObj
+
+        for (i in 0 until parts.size - 1) {
+            val segment = parts[i]
+            curr = when (curr) {
+                is PythonInstance -> curr.getAttribute(segment)
+                is KivyWidgetNode -> {
+                    if (segment == "ids") curr.ids
+                    else curr.properties[segment] ?: curr.findWidgetById(segment)
+                }
+                is Map<*, *> -> (curr as Map<String, Any?>)[segment]
+                else -> null
+            }
+        }
+
+        val finalProp = parts.last()
+        when (curr) {
+            is PythonInstance -> curr.setAttribute(finalProp, value)
+            is KivyWidgetNode -> {
+                when (finalProp) {
+                    "text" -> curr.properties["text"] = value?.toString() ?: ""
+                    "value" -> curr.properties["value"] = (value as? Number)?.toFloat() ?: (value?.toString()?.toFloatOrNull() ?: 0f)
+                    "active" -> curr.properties["active"] = (value == true || value?.toString()?.lowercase() == "true")
+                    "current" -> curr.properties["current"] = value?.toString() ?: ""
+                    else -> curr.properties[finalProp] = value
                 }
             }
-        } else {
-            env.set(target, value)
+            is KivyCanvasInstruction.DrawEllipse -> {
+                when (finalProp) {
+                    "pos" -> {
+                        val posList = value as? List<*>
+                        if (posList != null && posList.size >= 2) {
+                            curr.x = (posList[0] as? Number)?.toFloat() ?: curr.x
+                            curr.y = (posList[1] as? Number)?.toFloat() ?: curr.y
+                        }
+                    }
+                    "size" -> {
+                        val sizeList = value as? List<*>
+                        if (sizeList != null && sizeList.size >= 2) {
+                            curr.width = (sizeList[0] as? Number)?.toFloat() ?: curr.width
+                            curr.height = (sizeList[1] as? Number)?.toFloat() ?: curr.height
+                        }
+                    }
+                }
+            }
+            is KivyCanvasInstruction.DrawRectangle -> {
+                when (finalProp) {
+                    "pos" -> {
+                        val posList = value as? List<*>
+                        if (posList != null && posList.size >= 2) {
+                            curr.x = (posList[0] as? Number)?.toFloat() ?: curr.x
+                            curr.y = (posList[1] as? Number)?.toFloat() ?: curr.y
+                        }
+                    }
+                    "size" -> {
+                        val sizeList = value as? List<*>
+                        if (sizeList != null && sizeList.size >= 2) {
+                            curr.width = (sizeList[0] as? Number)?.toFloat() ?: curr.width
+                            curr.height = (sizeList[1] as? Number)?.toFloat() ?: curr.height
+                        }
+                    }
+                }
+            }
+            is MutableMap<*, *> -> {
+                (curr as MutableMap<String, Any?>)[finalProp] = value
+            }
         }
     }
 
@@ -601,10 +793,42 @@ class PythonInterpreter {
             return trimmed.substring(1, trimmed.length - 1).replace("\\n", "\n")
         }
 
-        // f-string: f"Score: {self.score}"
+        // f-string: f"..."
         if (trimmed.startsWith("f\"") || trimmed.startsWith("f'")) {
             val template = trimmed.substring(2, trimmed.length - 1)
             return evaluateFString(template, env, self)
+        }
+
+        // Lambda: lambda x, y=1: x + y
+        if (trimmed.startsWith("lambda ")) {
+            val defStr = trimmed.removePrefix("lambda ").trim()
+            val parts = defStr.split(":", limit = 2)
+            val paramsStr = parts[0].trim()
+            val bodyExpr = parts[1].trim()
+            val paramTokens = splitTopLevel(paramsStr, ',')
+
+            return { args: List<Any?> ->
+                val lambdaEnv = PythonEnvironment(env)
+                var aIdx = 0
+                for (token in paramTokens) {
+                    val pTrimmed = token.trim()
+                    if (pTrimmed.contains("=")) {
+                        val kv = pTrimmed.split("=", limit = 2)
+                        val pName = kv[0].trim()
+                        val defaultVal = evaluateExpression(kv[1].trim(), env, self)
+                        if (aIdx < args.size) {
+                            lambdaEnv.set(pName, args[aIdx++])
+                        } else {
+                            lambdaEnv.set(pName, defaultVal)
+                        }
+                    } else {
+                        if (aIdx < args.size) {
+                            lambdaEnv.set(pTrimmed, args[aIdx++])
+                        }
+                    }
+                }
+                evaluateExpression(bodyExpr, lambdaEnv, self)
+            }
         }
 
         // List literal: [a, b, c]
@@ -616,7 +840,7 @@ class PythonInterpreter {
         }
 
         // Tuple literal: (a, b)
-        if (trimmed.startsWith("(") && trimmed.endsWith(")") && !trimmed.contains(" ") && trimmed.contains(",")) {
+        if (trimmed.startsWith("(") && trimmed.endsWith(")") && trimmed.contains(",")) {
             val inner = trimmed.substring(1, trimmed.length - 1).trim()
             val items = splitTopLevel(inner, ',')
             return items.map { evaluateExpression(it, env, self) }
@@ -640,11 +864,11 @@ class PythonInterpreter {
             return map
         }
 
-        // String concatenation with '+'
-        if (trimmed.contains(" + ") && !trimmed.startsWith("eval(")) {
-            val parts = trimmed.split(" + ")
-            val evaluated = parts.map { evaluateExpression(it, env, self)?.toString() ?: "" }
-            return evaluated.joinToString("")
+        // Python slice syntax: e.g. self.formula[:-1]
+        if (trimmed.contains("[:-1]")) {
+            val baseTarget = trimmed.substringBefore("[:-1]").trim()
+            val baseVal = evaluateExpression(baseTarget, env, self)?.toString() ?: ""
+            return if (baseVal.isNotEmpty()) baseVal.dropLast(1) else ""
         }
 
         // eval() invocation
@@ -654,19 +878,27 @@ class PythonInterpreter {
             return evaluateMathExpression(exprToEval)
         }
 
-        // Instantiation or Function Call: e.g. Label(text="...", font_size=16) or Clock.schedule_interval(...)
+        // Instantiation or Function Call: e.g. Label(...) or self.slider.bind(...)
         if (trimmed.contains("(") && trimmed.endsWith(")")) {
-            val calleeName = trimmed.substring(0, trimmed.indexOf("(")).trim()
-            val argsStr = trimmed.substring(trimmed.indexOf("(") + 1, trimmed.length - 1).trim()
+            val firstParen = trimmed.indexOf("(")
+            val calleeName = trimmed.substring(0, firstParen).trim()
+            val argsStr = trimmed.substring(firstParen + 1, trimmed.length - 1).trim()
             return callFunctionOrConstructor(calleeName, argsStr, env, self)
         }
 
-        // Attribute access: self.prop or root.prop or self.ids.name_input
+        // Math binary arithmetic expressions: e.g. 100 + val * 0.8
+        if (trimmed.contains(" + ") || trimmed.contains(" - ") || trimmed.contains(" * ") || trimmed.contains(" / ")) {
+            val mathVal = evaluateMathExpression(trimmed, env, self)
+            if (mathVal != null) return mathVal
+        }
+
+        // Attribute access: self.prop or self.ids.name_input or root.prop
         if (trimmed.contains(".")) {
             val parts = trimmed.split(".")
             var current: Any? = when (parts[0]) {
                 "self" -> self
                 "root" -> self?.backingWidget ?: self
+                "app" -> runningAppInstance ?: self
                 else -> env.get(parts[0])
             }
 
@@ -690,7 +922,6 @@ class PythonInterpreter {
             return current
         }
 
-        // Variable lookup
         if (trimmed == "self") return self
         return env.get(trimmed)
     }
@@ -719,6 +950,14 @@ class PythonInterpreter {
         val trimmed = expr.trim()
         if (trimmed.startsWith("not ")) {
             return !evaluateCondition(trimmed.removePrefix("not ").trim(), env, self)
+        }
+        if (trimmed.contains(" and ")) {
+            val parts = trimmed.split(" and ", limit = 2)
+            return evaluateCondition(parts[0], env, self) && evaluateCondition(parts[1], env, self)
+        }
+        if (trimmed.contains(" or ")) {
+            val parts = trimmed.split(" or ", limit = 2)
+            return evaluateCondition(parts[0], env, self) || evaluateCondition(parts[1], env, self)
         }
         if (trimmed.contains("==")) {
             val parts = trimmed.split("==")
@@ -772,12 +1011,12 @@ class PythonInterpreter {
 
         // Built-in Kivy Widget Constructors
         if (name in listOf("BoxLayout", "GridLayout", "FloatLayout", "AnchorLayout", "Button", "Label", "TextInput", "Slider", "Switch", "ProgressBar", "Image", "ScreenManager", "Screen", "Widget")) {
-            val node = KivyWidgetNode(type = name)
+            val node = KivyWidgetNode(type = name, baseType = name)
             kwArgs.forEach { (k, v) ->
                 when (k) {
                     "text" -> node.properties["text"] = v?.toString() ?: ""
                     "font_size" -> node.properties["font_size"] = (v as? Number)?.toInt() ?: 16
-                    "orientation" -> node.properties["orientation"] = v?.toString() ?: "horizontal"
+                    "orientation" -> node.properties["orientation"] = v?.toString() ?: "vertical"
                     "spacing" -> node.properties["spacing"] = (v as? Number)?.toInt() ?: 8
                     "padding" -> node.properties["padding"] = (v as? Number)?.toInt() ?: 12
                     "cols" -> node.properties["cols"] = (v as? Number)?.toInt() ?: 2
@@ -788,6 +1027,8 @@ class PythonInterpreter {
                     "value" -> node.properties["value"] = (v as? Number)?.toFloat() ?: 0f
                     "step" -> node.properties["step"] = (v as? Number)?.toFloat() ?: 1f
                     "size_hint" -> node.properties["size_hint"] = v
+                    "bold" -> node.properties["bold"] = (v == true || v?.toString()?.lowercase() == "true")
+                    "halign" -> node.properties["halign"] = v?.toString() ?: "left"
                     "color" -> {
                         if (v is List<*>) node.properties["color"] = KivyColor.fromList(v)
                         else if (v is KivyColor) node.properties["color"] = v
@@ -858,18 +1099,12 @@ class PythonInterpreter {
             return inst
         }
 
-        // Method calls on objects: e.g. root.add_widget(header), btn.bind(on_press=...)
+        // Method calls on objects: e.g. root.add_widget(header), self.slider.bind(...)
         if (name.contains(".")) {
             val parts = name.split(".")
-            val objName = parts[0]
-            val methodName = parts[1]
-
-            val targetObj = when (objName) {
-                "self" -> self
-                "root" -> self?.backingWidget ?: self
-                "Clock" -> globalEnv.get("Clock")
-                else -> env.get(objName)
-            }
+            val methodName = parts.last()
+            val targetPath = parts.dropLast(1).joinToString(".")
+            val targetObj = evaluateExpression(targetPath, env, self)
 
             if (targetObj is KivyWidgetNode) {
                 if (methodName == "add_widget") {
@@ -892,6 +1127,23 @@ class PythonInterpreter {
             }
 
             if (targetObj is PythonInstance) {
+                if (methodName == "add_widget") {
+                    val child = posArgs.getOrNull(0)
+                    if (child is KivyWidgetNode) {
+                        targetObj.backingWidget?.addWidget(child)
+                    } else if (child is PythonInstance && child.backingWidget != null) {
+                        targetObj.backingWidget?.addWidget(child.backingWidget!!)
+                    }
+                    return null
+                }
+                if (methodName == "bind") {
+                    kwArgs.forEach { (eventKey, handler) ->
+                        targetObj.backingWidget?.eventHandlers?.put(eventKey) { args ->
+                            invokeCallable(handler, args)
+                        }
+                    }
+                    return null
+                }
                 targetObj.klass.methods[methodName]?.let { method ->
                     return method.invoke(targetObj, posArgs, kwArgs)
                 }
@@ -923,7 +1175,7 @@ class PythonInterpreter {
         val tokens = splitTopLevel(argsStr, ',')
         for (token in tokens) {
             val trimmed = token.trim()
-            if (trimmed.contains("=") && !trimmed.startsWith("==") && !trimmed.contains("==")) {
+            if (trimmed.contains("=") && !trimmed.startsWith("==") && !trimmed.contains("==") && !trimmed.startsWith("lambda ")) {
                 val kv = trimmed.split("=", limit = 2)
                 val k = kv[0].trim()
                 val v = evaluateExpression(kv[1].trim(), env, self)
@@ -960,13 +1212,24 @@ class PythonInterpreter {
         return results
     }
 
-    private fun evaluateMathExpression(expr: String): Any {
+    private fun evaluateMathExpression(expr: String, env: PythonEnvironment? = null, self: PythonInstance? = null): Any? {
         try {
-            val clean = expr.replace(" ", "")
-            // Handle basic expressions
-            return SimpleMathEvaluator.eval(clean)
+            var clean = expr.trim()
+            // Substitute known variables if provided
+            if (env != null || self != null) {
+                val words = clean.split(Regex("[^a-zA-Z0-9_.]+")).filter { it.isNotEmpty() }
+                for (word in words) {
+                    if (word.toDoubleOrNull() == null && word !in listOf("sin", "cos", "sqrt", "floor", "ceil", "pi", "pow", "abs", "round")) {
+                        val v = evaluateExpression(word, env ?: globalEnv, self)
+                        if (v is Number) {
+                            clean = clean.replace(word, v.toString())
+                        }
+                    }
+                }
+            }
+            return SimpleMathEvaluator.eval(clean.replace(" ", ""))
         } catch (e: Exception) {
-            return "Error: ${e.message}"
+            return null
         }
     }
 }

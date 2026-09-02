@@ -1,16 +1,23 @@
 package com.example
 
+import com.example.data.local.DefaultProjects
+import com.example.engine.PythonInterpreter
 import org.junit.Assert.*
 import org.junit.Test
 
-/**
- * Example local unit test, which will execute on the development machine (host).
- *
- * See [testing documentation](http://d.android.com/tools/testing).
- */
 class ExampleUnitTest {
-  @Test
-  fun addition_isCorrect() {
-    assertEquals(4, 2 + 2)
-  }
+    @Test
+    fun addition_isCorrect() {
+        assertEquals(4, 2 + 2)
+    }
+
+    @Test
+    fun testDefaultProjectsExecuteSuccessfully() {
+        val interpreter = PythonInterpreter()
+        for (project in DefaultProjects.list) {
+            val result = interpreter.run(project.pythonCode, project.kvCode)
+            assertTrue("Project ${project.name} failed with error: ${result.error}", result.isSuccess)
+            assertNotNull("Project ${project.name} should have a root widget", result.rootWidget)
+        }
+    }
 }

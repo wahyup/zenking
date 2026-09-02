@@ -1,9 +1,13 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -16,22 +20,37 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.Numbers
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,18 +60,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.filesystem.LocalProjectFile
+import com.example.ui.syntax.EditorTheme
+import com.example.ui.syntax.PythonSyntaxHighlighter
 
 @Composable
 fun CodeEditorView(
@@ -67,21 +82,42 @@ fun CodeEditorView(
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Python (.py), 1: KV Lang (.kv)
+    var currentTheme by remember { mutableStateOf(EditorTheme.VS_CODE_DARK) }
+    var fontSizeSp by remember { mutableFloatStateOf(13f) }
+    var showLineNumbers by remember { mutableStateOf(true) }
+    var showSearchBar by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showThemeDialog by remember { mutableStateOf(false) }
 
-    Column(modifier = modifier.fillMaxSize().background(Color(0xFF0B0F19))) {
-        // Multi-file tabs row
+    val isKvActive = (activeLocalFile != null && activeLocalFile.extension == "kv") || (projectFiles.isEmpty() && selectedTab == 1)
+    val activeCode = if (!isKvActive) pythonCode else kvCode
+
+    val syntaxHighlighter = remember(currentTheme, searchQuery, isKvActive) {
+        PythonSyntaxHighlighter(
+            theme = currentTheme,
+            searchQuery = searchQuery,
+            isKvLanguage = isKvActive
+        )
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(currentTheme.backgroundColor)
+    ) {
+        // Multi-file tabs row or Standard Tabs
         if (projectFiles.isNotEmpty()) {
             val selectedIdx = projectFiles.indexOfFirst { it.absolutePath == activeLocalFile?.absolutePath }.coerceAtLeast(0)
             ScrollableTabRow(
                 selectedTabIndex = selectedIdx,
-                containerColor = Color(0xFF0F172A),
+                containerColor = currentTheme.gutterColor,
                 contentColor = Color.White,
                 edgePadding = 8.dp,
                 indicator = { tabPositions ->
                     if (selectedIdx < tabPositions.size) {
                         TabRowDefaults.SecondaryIndicator(
                             Modifier.tabIndicatorOffset(tabPositions[selectedIdx]),
-                            color = Color(0xFF10B981)
+                            color = currentTheme.keywordColor
                         )
                     }
                 }
@@ -96,6 +132,7 @@ fun CodeEditorView(
                                 Text(
                                     text = if (file.extension == "py") "🐍 ${file.name}" else "📐 ${file.name}",
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) currentTheme.keywordColor else currentTheme.textColor.copy(alpha = 0.7f),
                                     fontSize = 12.sp
                                 )
                             }
@@ -120,12 +157,12 @@ fun CodeEditorView(
             // Default two-tab fallback
             TabRow(
                 selectedTabIndex = selectedTab,
-                containerColor = Color(0xFF0F172A),
+                containerColor = currentTheme.gutterColor,
                 contentColor = Color.White,
                 indicator = { tabPositions ->
                     TabRowDefaults.SecondaryIndicator(
                         Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                        color = Color(0xFF10B981)
+                        color = currentTheme.keywordColor
                     )
                 }
             ) {
@@ -134,7 +171,11 @@ fun CodeEditorView(
                     onClick = { selectedTab = 0 },
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("🐍 main.py", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal)
+                            Text(
+                                text = "🐍 main.py",
+                                fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selectedTab == 0) currentTheme.keywordColor else currentTheme.textColor.copy(alpha = 0.7f)
+                            )
                         }
                     }
                 )
@@ -143,18 +184,179 @@ fun CodeEditorView(
                     onClick = { selectedTab = 1 },
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("📐 app.kv", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal)
+                            Text(
+                                text = "📐 app.kv",
+                                fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selectedTab == 1) currentTheme.keywordColor else currentTheme.textColor.copy(alpha = 0.7f)
+                            )
                         }
                     }
                 )
             }
         }
 
-        // Quick Code snippet shortcuts toolbar
-        val isKvActive = (activeLocalFile != null && activeLocalFile.extension == "kv") || (projectFiles.isEmpty() && selectedTab == 1)
+        // Toolbar: Theme Picker, Font Scale, Find, Line Numbers toggle
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(currentTheme.gutterColor)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Syntax Theme Chip Button
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = currentTheme.backgroundColor,
+                    modifier = Modifier
+                        .clickable { showThemeDialog = true }
+                        .testTag("theme_selector_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.ColorLens,
+                            contentDescription = "Theme",
+                            tint = currentTheme.keywordColor,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = currentTheme.displayName,
+                            color = currentTheme.textColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
 
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Syntax Mode Badge
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = if (isKvActive) Color(0x3338BDF8) else Color(0x3310B981)
+                ) {
+                    Text(
+                        text = if (isKvActive) "KV Lang Syntax" else "Python 3 Syntax",
+                        color = if (isKvActive) Color(0xFF38BDF8) else Color(0xFF34D399),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Font Size Decrement
+                IconButton(
+                    onClick = { if (fontSizeSp > 10f) fontSizeSp -= 1f },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Text("A-", color = currentTheme.textColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Text(
+                    text = "${fontSizeSp.toInt()}pt",
+                    color = currentTheme.gutterTextColor,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+
+                // Font Size Increment
+                IconButton(
+                    onClick = { if (fontSizeSp < 22f) fontSizeSp += 1f },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Text("A+", color = currentTheme.textColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+
+                // Line Numbers Toggle
+                IconButton(
+                    onClick = { showLineNumbers = !showLineNumbers },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Numbers,
+                        contentDescription = "Toggle Line Numbers",
+                        tint = if (showLineNumbers) currentTheme.keywordColor else currentTheme.gutterTextColor,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                // Search in Code Toggle
+                IconButton(
+                    onClick = {
+                        showSearchBar = !showSearchBar
+                        if (!showSearchBar) searchQuery = ""
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "Search in Code",
+                        tint = if (showSearchBar || searchQuery.isNotBlank()) currentTheme.functionColor else currentTheme.gutterTextColor,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+
+        // Animated Search in Code Bar
+        AnimatedVisibility(visible = showSearchBar) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(currentTheme.gutterColor)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Find in code...", fontSize = 12.sp, color = currentTheme.gutterTextColor) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .testTag("code_search_field"),
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 12.sp, color = Color.White),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = currentTheme.functionColor,
+                        unfocusedBorderColor = Color(0xFF334155),
+                        focusedContainerColor = currentTheme.backgroundColor,
+                        unfocusedContainerColor = currentTheme.backgroundColor
+                    )
+                )
+
+                if (searchQuery.isNotBlank()) {
+                    val matchCount = Regex.escape(searchQuery).toRegex(RegexOption.IGNORE_CASE).findAll(activeCode).count()
+                    Text(
+                        text = "$matchCount matches",
+                        color = currentTheme.functionColor,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        searchQuery = ""
+                        showSearchBar = false
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Close Search", tint = Color.Gray, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+
+        // Quick Code snippet shortcuts toolbar
         val shortcuts = if (!isKvActive) {
-            listOf("def ", "class ", "self.", "import ", "from kivy.", "BoxLayout(", "Button(", "Label(", "Slider(", "Clock.", "on_press=", "size_hint=", "pos_hint=", ":", "( )", "[ ]", "{ }", "4-Space", "\" \"", "# ")
+            listOf("def ", "class ", "self.", "import ", "from kivy.", "BoxLayout(", "Button(", "Label(", "Slider(", "Clock.schedule_", "on_press=", "size_hint=", "pos_hint=", ":", "( )", "[ ]", "{ }", "4-Space", "\" \"", "# ")
         } else {
             listOf("<Layout>:", "orientation: ", "size_hint: ", "padding: ", "spacing: ", "Button:", "Label:", "TextInput:", "Slider:", "Switch:", "id: ", "text: ", "on_press: ", "root.", "app.", ":", "( )", "[ ]")
         }
@@ -162,50 +364,42 @@ fun CodeEditorView(
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF131C2E))
+                .background(currentTheme.backgroundColor.copy(alpha = 0.95f))
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             items(shortcuts) { snippet ->
                 AssistChip(
                     onClick = {
-                        val currentText = if (!isKvActive) pythonCode else kvCode
-                        val newText = if (snippet == "4-Space") {
-                            "$currentText    "
-                        } else if (snippet == "( )") {
-                            "$currentText()"
-                        } else if (snippet == "[ ]") {
-                            "$currentText[]"
-                        } else if (snippet == "{ }") {
-                            "$currentText{}"
-                        } else if (snippet == "\" \"") {
-                            "$currentText\"\""
-                        } else {
-                            "$currentText$snippet"
+                        val newText = when (snippet) {
+                            "4-Space" -> "$activeCode    "
+                            "( )" -> "$activeCode()"
+                            "[ ]" -> "$activeCode[]"
+                            "{ }" -> "$activeCode{}"
+                            "\" \"" -> "$activeCode\"\""
+                            else -> "$activeCode$snippet"
                         }
                         if (!isKvActive) onPythonCodeChange(newText) else onKvCodeChange(newText)
                     },
                     label = {
                         Text(
                             text = snippet,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
-                            color = Color(0xFF38BDF8)
+                            color = currentTheme.keywordColor
                         )
                     },
                     modifier = Modifier.padding(end = 6.dp),
                     colors = AssistChipDefaults.assistChipColors(
-                        containerColor = Color(0xFF1E293B)
+                        containerColor = currentTheme.gutterColor
                     ),
                     shape = RoundedCornerShape(6.dp)
                 )
             }
         }
 
-        // Code Editor Canvas with Line Numbers
-        val codeText = if (!isKvActive) pythonCode else kvCode
-        val linesCount = codeText.lines().size.coerceAtLeast(1)
-
+        // Code Editor Canvas with Line Numbers & Syntax Transformation
+        val linesCount = activeCode.lines().size.coerceAtLeast(1)
         val vScrollState = rememberScrollState()
         val hScrollState = rememberScrollState()
 
@@ -213,26 +407,28 @@ fun CodeEditorView(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .background(Color(0xFF0A0E17))
+                .background(currentTheme.backgroundColor)
         ) {
             // Line numbers column
-            Column(
-                modifier = Modifier
-                    .width(44.dp)
-                    .fillMaxHeight()
-                    .background(Color(0xFF0F172A))
-                    .verticalScroll(vScrollState)
-                    .padding(vertical = 12.dp),
-                horizontalAlignment = Alignment.End
-            ) {
-                for (lineNum in 1..linesCount) {
-                    Text(
-                        text = "$lineNum",
-                        color = Color(0xFF475569),
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(end = 8.dp)
-                    )
+            if (showLineNumbers) {
+                Column(
+                    modifier = Modifier
+                        .width(46.dp)
+                        .fillMaxHeight()
+                        .background(currentTheme.gutterColor)
+                        .verticalScroll(vScrollState)
+                        .padding(vertical = 12.dp),
+                    horizontalAlignment = Alignment.End
+                ) {
+                    for (lineNum in 1..linesCount) {
+                        Text(
+                            text = "$lineNum",
+                            color = currentTheme.gutterTextColor,
+                            fontSize = fontSizeSp.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                    }
                 }
             }
 
@@ -246,7 +442,7 @@ fun CodeEditorView(
                     .padding(start = 12.dp, top = 12.dp, end = 16.dp, bottom = 32.dp)
             ) {
                 BasicTextField(
-                    value = codeText,
+                    value = activeCode,
                     onValueChange = {
                         if (!isKvActive) onPythonCodeChange(it) else onKvCodeChange(it)
                     },
@@ -254,94 +450,107 @@ fun CodeEditorView(
                         .fillMaxWidth()
                         .testTag("code_editor_input"),
                     textStyle = TextStyle(
-                        color = Color(0xFFF1F5F9),
-                        fontSize = 13.sp,
+                        color = currentTheme.textColor,
+                        fontSize = fontSizeSp.sp,
                         fontFamily = FontFamily.Monospace,
-                        lineHeight = 20.sp
+                        lineHeight = (fontSizeSp * 1.55f).sp
                     ),
-                    cursorBrush = SolidColor(Color(0xFF10B981)),
-                    visualTransformation = PythonSyntaxVisualTransformation()
+                    cursorBrush = SolidColor(currentTheme.keywordColor),
+                    visualTransformation = syntaxHighlighter
                 )
             }
         }
-    }
-}
 
-class PythonSyntaxVisualTransformation : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        val raw = text.text
-        val annotated = buildAnnotatedString {
-            append(raw)
-
-            // Python keywords
-            val keywords = listOf(
-                "def", "class", "return", "if", "else", "elif", "for", "while", "import", "from",
-                "as", "in", "is", "not", "and", "or", "try", "except", "finally", "with", "lambda",
-                "True", "False", "None", "self", "pass", "break", "continue"
+        // Status footer
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(currentTheme.gutterColor)
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${linesCount} lines • ${activeCode.length} chars • UTF-8",
+                color = currentTheme.gutterTextColor,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace
             )
 
-            // Kivy UI classes
-            val kivyClasses = listOf(
-                "App", "Widget", "BoxLayout", "GridLayout", "FloatLayout", "AnchorLayout", "StackLayout",
-                "Button", "Label", "TextInput", "Slider", "Switch", "ProgressBar", "Image", "ScreenManager",
-                "Screen", "Clock", "Animation", "Builder", "Color", "Rectangle", "Ellipse", "Line"
+            Text(
+                text = if (isKvActive) "📐 Kivy KV Lang" else "🐍 Python 3.10+",
+                color = currentTheme.keywordColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
             )
-
-            // Syntax coloring
-            val lines = raw.lines()
-            var currentOffset = 0
-
-            for (line in lines) {
-                val commentIdx = line.indexOf("#")
-                val codePart = if (commentIdx != -1) line.substring(0, commentIdx) else line
-
-                // Highlight Keywords
-                for (kw in keywords) {
-                    val regex = Regex("\\b$kw\\b")
-                    regex.findAll(codePart).forEach { match ->
-                        addStyle(
-                            SpanStyle(color = Color(0xFFF472B6), fontWeight = FontWeight.Bold),
-                            currentOffset + match.range.first,
-                            currentOffset + match.range.last + 1
-                        )
-                    }
-                }
-
-                // Highlight Kivy classes
-                for (kc in kivyClasses) {
-                    val regex = Regex("\\b$kc\\b")
-                    regex.findAll(codePart).forEach { match ->
-                        addStyle(
-                            SpanStyle(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold),
-                            currentOffset + match.range.first,
-                            currentOffset + match.range.last + 1
-                        )
-                    }
-                }
-
-                // Highlight Strings: "..." or '...'
-                val strRegex = Regex("(\"[^\"]*\"|'[^']*')")
-                strRegex.findAll(codePart).forEach { match ->
-                    addStyle(
-                        SpanStyle(color = Color(0xFF34D399)),
-                        currentOffset + match.range.first,
-                        currentOffset + match.range.last + 1
-                    )
-                }
-
-                // Highlight Comments
-                if (commentIdx != -1) {
-                    addStyle(
-                        SpanStyle(color = Color(0xFF64748B)),
-                        currentOffset + commentIdx,
-                        currentOffset + line.length
-                    )
-                }
-
-                currentOffset += line.length + 1 // including \n
-            }
         }
+    }
 
-        return TransformedText(annotated, OffsetMapping.Identity)
+    // Theme Selection Dialog
+    if (showThemeDialog) {
+        AlertDialog(
+            onDismissRequest = { showThemeDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.ColorLens, contentDescription = null, tint = Color(0xFF10B981))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Syntax Highlighting Theme", fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Select a color palette for Python syntax highlighting:", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                    EditorTheme.values().forEach { theme ->
+                        val isSelected = currentTheme == theme
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    currentTheme = theme
+                                    showThemeDialog = false
+                                },
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.backgroundColor,
+                            border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF10B981)) else null
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = theme.displayName,
+                                        color = theme.textColor,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Row(modifier = Modifier.padding(top = 4.dp)) {
+                                        Text("def ", color = theme.keywordColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                        Text("build", color = theme.functionColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                        Text("(self): ", color = theme.builtinColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                        Text("\"Hello\"", color = theme.stringColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+
+                                if (isSelected) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF10B981),
+                                        modifier = Modifier.size(10.dp)
+                                    ) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showThemeDialog = false }) {
+                    Text("Done", color = Color(0xFF10B981))
+                }
+            },
+            containerColor = Color(0xFF1E293B)
+        )
     }
 }

@@ -73,6 +73,7 @@ data class DrawingStroke(
 class KivyWidgetNode(
     val id: String = "",
     val type: String = "Widget",
+    val baseType: String = "Widget",
     val properties: MutableMap<String, Any?> = mutableMapOf(),
     val children: MutableList<KivyWidgetNode> = mutableListOf(),
     var parent: KivyWidgetNode? = null

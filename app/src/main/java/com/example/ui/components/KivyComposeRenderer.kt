@@ -7,15 +7,12 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,18 +21,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
@@ -52,15 +44,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.engine.DrawingPoint
-import com.example.engine.DrawingStroke
 import com.example.engine.KivyColor
 import com.example.engine.KivyRuntime
 import com.example.engine.KivyWidgetNode
@@ -86,8 +75,16 @@ fun KivyComposeRenderer(
             .clickable { onSelectWidget(widget) }
     } else Modifier
 
-    when (widget.type) {
-        "BoxLayout" -> BoxLayoutView(widget, runtime, modifier.then(inspectModifier), isInspectMode, selectedWidget, onSelectWidget)
+    val effectiveType = when {
+        widget.type in listOf("BoxLayout", "GridLayout", "FloatLayout", "AnchorLayout", "ScreenManager", "Screen", "Button", "Label", "TextInput", "Slider", "Switch", "ProgressBar", "Image") -> widget.type
+        widget.baseType in listOf("BoxLayout", "GridLayout", "FloatLayout", "AnchorLayout", "ScreenManager", "Screen", "Button", "Label", "TextInput", "Slider", "Switch", "ProgressBar", "Image") -> widget.baseType
+        widget.properties.containsKey("cols") || widget.properties.containsKey("rows") -> "GridLayout"
+        widget.properties.containsKey("orientation") || widget.children.isNotEmpty() -> "BoxLayout"
+        else -> widget.type
+    }
+
+    when (effectiveType) {
+        "BoxLayout", "FloatLayout", "AnchorLayout" -> BoxLayoutView(widget, runtime, modifier.then(inspectModifier), isInspectMode, selectedWidget, onSelectWidget)
         "GridLayout" -> GridLayoutView(widget, runtime, modifier.then(inspectModifier), isInspectMode, selectedWidget, onSelectWidget)
         "ScreenManager" -> ScreenManagerView(widget, runtime, modifier.then(inspectModifier), isInspectMode, selectedWidget, onSelectWidget)
         "Screen" -> ScreenView(widget, runtime, modifier.then(inspectModifier), isInspectMode, selectedWidget, onSelectWidget)
@@ -112,42 +109,49 @@ private fun BoxLayoutView(
     onSelectWidget: (KivyWidgetNode) -> Unit
 ) {
     val orientation = widget.getString("orientation", "vertical")
-    val padding = widget.getInt("padding", 10).dp
+    val padding = widget.getInt("padding", 12).dp
     val spacing = widget.getInt("spacing", 8).dp
-    val (shX, shY) = widget.getSizeHint()
 
-    val baseModifier = modifier
-        .padding(padding)
+    val hasAnyWeightedChild = widget.children.any {
+        val (shX, shY) = it.getSizeHint()
+        if (orientation == "horizontal") (shX != null && shX > 0f) else (shY != null && shY > 0f)
+    }
 
     if (orientation == "horizontal") {
         Row(
-            modifier = if (shY != null && shY > 0f) baseModifier.fillMaxWidth().fillMaxHeight(shY) else baseModifier.fillMaxWidth(),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(padding),
             horizontalArrangement = Arrangement.spacedBy(spacing),
             verticalAlignment = Alignment.CenterVertically
         ) {
             widget.children.forEach { child ->
                 val (childShX, _) = child.getSizeHint()
                 val childMod = if (childShX != null && childShX > 0f) {
-                    Modifier.weight(childShX.coerceAtLeast(0.1f))
+                    Modifier.weight(childShX.coerceAtLeast(0.05f))
+                } else if (!hasAnyWeightedChild) {
+                    Modifier.weight(1f)
                 } else {
-                    Modifier
+                    Modifier.wrapContentWidth()
                 }
                 KivyComposeRenderer(child, runtime, childMod, isInspectMode, selectedWidget, onSelectWidget)
             }
         }
     } else {
         Column(
-            modifier = if (shY != null && shY > 0f) baseModifier.fillMaxWidth().fillMaxHeight(shY) else baseModifier.fillMaxWidth(),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(padding),
             verticalArrangement = Arrangement.spacedBy(spacing)
         ) {
             widget.children.forEach { child ->
                 val (_, childShY) = child.getSizeHint()
                 val childMod = if (childShY != null && childShY > 0f) {
-                    Modifier.weight(childShY.coerceAtLeast(0.1f))
+                    Modifier.weight(childShY.coerceAtLeast(0.05f))
                 } else {
                     Modifier.wrapContentHeight()
                 }
-                KivyComposeRenderer(child, runtime, childMod, isInspectMode, selectedWidget, onSelectWidget)
+                KivyComposeRenderer(child, runtime, childMod.fillMaxWidth(), isInspectMode, selectedWidget, onSelectWidget)
             }
         }
     }
@@ -165,19 +169,39 @@ private fun GridLayoutView(
     val cols = widget.getInt("cols", 2).coerceAtLeast(1)
     val spacing = widget.getInt("spacing", 8).dp
     val padding = widget.getInt("padding", 8).dp
-    val (shX, shY) = widget.getSizeHint()
+    val (_, shY) = widget.getSizeHint()
 
-    val baseModifier = modifier
-        .padding(padding)
+    val chunkedRows = widget.children.chunked(cols)
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(cols),
-        modifier = if (shY != null && shY > 0f) baseModifier.fillMaxWidth().fillMaxHeight(shY) else baseModifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(spacing),
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(padding),
         verticalArrangement = Arrangement.spacedBy(spacing)
     ) {
-        items(widget.children) { child ->
-            KivyComposeRenderer(child, runtime, Modifier.fillMaxWidth(), isInspectMode, selectedWidget, onSelectWidget)
+        chunkedRows.forEach { rowChildren ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (shY != null && shY > 0f) Modifier.weight(1f) else Modifier.wrapContentHeight()
+                    ),
+                horizontalArrangement = Arrangement.spacedBy(spacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                rowChildren.forEach { child ->
+                    Box(modifier = Modifier.weight(1f)) {
+                        KivyComposeRenderer(child, runtime, Modifier.fillMaxWidth(), isInspectMode, selectedWidget, onSelectWidget)
+                    }
+                }
+                // Fill in empty slots if last row has fewer items
+                val remaining = cols - rowChildren.size
+                if (remaining > 0) {
+                    repeat(remaining) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
         }
     }
 }
@@ -207,7 +231,7 @@ private fun ScreenManagerView(
                 KivyComposeRenderer(screen, runtime, Modifier.fillMaxSize(), isInspectMode, selectedWidget, onSelectWidget)
             } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No screens added to ScreenManager", color = Color.Gray)
+                    Text("No screens in ScreenManager", color = Color.Gray, fontSize = 14.sp)
                 }
             }
         }
@@ -238,7 +262,7 @@ private fun ButtonView(
 ) {
     val text = widget.getString("text", "Button")
     val fontSize = widget.getInt("font_size", 16).sp
-    val bgColor = widget.getColor("background_color", KivyColor(0.2f, 0.5f, 0.9f, 1f)).toComposeColor()
+    val bgColor = widget.getColor("background_color", KivyColor(0.12f, 0.55f, 0.95f, 1f)).toComposeColor()
     val textColor = widget.getColor("color", KivyColor(1f, 1f, 1f, 1f)).toComposeColor()
     val isBold = widget.getBoolean("bold", false)
 
@@ -249,19 +273,21 @@ private fun ButtonView(
         },
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
+            .heightIn(min = 44.dp)
             .testTag("kivy_btn_${widget.id.ifEmpty { text.lowercase().replace(" ", "_") }}"),
         colors = ButtonDefaults.buttonColors(
             containerColor = bgColor,
             contentColor = textColor
         ),
-        shape = RoundedCornerShape(10.dp)
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Text(
             text = text,
             fontSize = fontSize,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Medium,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            maxLines = 2
         )
     }
 }
@@ -274,6 +300,7 @@ private fun LabelView(
     val text = widget.getString("text", "")
     val fontSize = widget.getInt("font_size", 16).sp
     val color = widget.getColor("color", KivyColor(0.9f, 0.95f, 1f, 1f)).toComposeColor()
+    val bgColor = widget.getColor("background_color", KivyColor(0f, 0f, 0f, 0f)).toComposeColor()
     val isBold = widget.getBoolean("bold", false)
     val halign = widget.getString("halign", "left")
 
@@ -283,19 +310,35 @@ private fun LabelView(
         else -> TextAlign.Start
     }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-        shape = RoundedCornerShape(8.dp)
+    val isCardLike = text.contains("\n") || bgColor.alpha > 0.05f
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(
+                if (bgColor.alpha > 0.05f) bgColor else if (isCardLike) Color(0x221E293B) else Color.Transparent,
+                RoundedCornerShape(8.dp)
+            )
+            .border(
+                width = if (isCardLike) 1.dp else 0.dp,
+                color = if (isCardLike) Color(0x33475569) else Color.Transparent,
+                shape = RoundedCornerShape(8.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = if (isCardLike) 8.dp else 4.dp),
+        contentAlignment = when (halign) {
+            "center" -> Alignment.Center
+            "right" -> Alignment.CenterEnd
+            else -> Alignment.CenterStart
+        }
     ) {
         Text(
             text = text,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             fontSize = fontSize,
             color = color,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal,
             textAlign = textAlign,
-            fontFamily = if (text.contains("\n") && text.contains("%")) FontFamily.Monospace else FontFamily.Default
+            fontFamily = if (text.contains("\n") && (text.contains("%") || text.contains("FPS") || text.contains("MB"))) FontFamily.Monospace else FontFamily.Default,
+            lineHeight = (fontSize.value * 1.3f).sp
         )
     }
 }
@@ -306,18 +349,19 @@ private fun TextInputView(
     runtime: KivyRuntime,
     modifier: Modifier
 ) {
-    var text by remember(widget.getString("text")) { mutableStateOf(widget.getString("text")) }
+    val text = widget.getString("text", "")
     val hint = widget.getString("hint_text", "Enter value...")
     val isMultiline = widget.getBoolean("multiline", false)
 
     OutlinedTextField(
         value = text,
         onValueChange = {
-            text = it
             widget.properties["text"] = it
             runtime.triggerEvent(widget, "on_text_validate", listOf(widget, it))
         },
-        modifier = modifier.fillMaxWidth().heightIn(min = 48.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp),
         placeholder = { Text(hint, color = Color.Gray, fontSize = 14.sp) },
         singleLine = !isMultiline,
         shape = RoundedCornerShape(8.dp),
@@ -349,7 +393,9 @@ private fun SliderView(
             runtime.triggerEvent(widget, "on_value", listOf(widget, newVal))
         },
         valueRange = minVal..maxVal,
-        modifier = modifier.fillMaxWidth().heightIn(min = 48.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp),
         colors = SliderDefaults.colors(
             thumbColor = Color(0xFF10B981),
             activeTrackColor = Color(0xFF059669),
@@ -367,7 +413,7 @@ private fun SwitchView(
     val active = widget.getBoolean("active", false)
 
     Row(
-        modifier = modifier.heightIn(min = 48.dp),
+        modifier = modifier.heightIn(min = 40.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Switch(
@@ -431,21 +477,23 @@ private fun GenericWidgetView(
     selectedWidget: KivyWidgetNode?,
     onSelectWidget: (KivyWidgetNode) -> Unit
 ) {
-    // If widget has canvas instructions or interactive drawing strokes
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 160.dp)
-            .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
-            .border(1.dp, Color(0xFF334155), RoundedCornerShape(12.dp))
-    ) {
-        KivyCanvasView(widget = widget, modifier = Modifier.fillMaxSize())
+    if (widget.children.isNotEmpty() && widget.canvas.instructions.isEmpty() && widget.drawingStrokes.isEmpty()) {
+        BoxLayoutView(widget, runtime, modifier, isInspectMode, selectedWidget, onSelectWidget)
+    } else {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .heightIn(min = 160.dp)
+                .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
+                .border(1.dp, Color(0xFF334155), RoundedCornerShape(12.dp))
+        ) {
+            KivyCanvasView(widget = widget, modifier = Modifier.fillMaxSize())
 
-        // Child widgets if any
-        if (widget.children.isNotEmpty()) {
-            Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
-                widget.children.forEach { child ->
-                    KivyComposeRenderer(child, runtime, Modifier.fillMaxWidth(), isInspectMode, selectedWidget, onSelectWidget)
+            if (widget.children.isNotEmpty()) {
+                Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                    widget.children.forEach { child ->
+                        KivyComposeRenderer(child, runtime, Modifier.fillMaxWidth(), isInspectMode, selectedWidget, onSelectWidget)
+                    }
                 }
             }
         }
